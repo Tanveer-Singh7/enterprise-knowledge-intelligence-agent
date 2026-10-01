@@ -7,6 +7,7 @@ class SourceDocument:
     source_uri: str
     title: str
     content: str
+    external_id:str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
 
 

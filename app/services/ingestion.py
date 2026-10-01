@@ -74,6 +74,7 @@ class DocumentPersistenceService:
         content_hash: str,
     ) -> Document:
         db_document = Document(
+            external_id=document.external_id,
             source_uri=document.source_uri,
             title=document.title,
             content=document.content,
@@ -103,6 +104,7 @@ class DocumentPersistenceService:
         chunks: list[DocumentChunk],
         content_hash: str,
     ) -> Document:
+        db_document.external_id=document.external_id
         db_document.title = document.title
         db_document.content = document.content
         db_document.content_hash = content_hash

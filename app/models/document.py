@@ -10,7 +10,12 @@ class Document(Base):
     __tablename__ = "documents"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    
+
+    external_id: Mapped[int] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
     source_uri: Mapped[str] = mapped_column(
         String(1024), unique=True, nullable=False
         )

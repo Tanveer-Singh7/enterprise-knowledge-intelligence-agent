@@ -32,6 +32,7 @@ def parse_file(path: Path) -> SourceDocument:
         source_uri=str(path.resolve()),
         title=path.stem,
         content=content,
+        external_id=path.stem,
         metadata={
             "document_type": document_type,
             "extension": path.suffix.lower(),
