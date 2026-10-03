@@ -1,0 +1,7 @@
+application:
+  name: eki-agent
+  version: "0.1.0"
+
+database:
+  host: localhost
+  port: 5432
