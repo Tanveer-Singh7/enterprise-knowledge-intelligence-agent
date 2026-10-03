@@ -1,3 +1,4 @@
+from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Integer, JSON, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -20,5 +21,6 @@ class Chunk(Base):
         default=dict,
         nullable=False,
     )
-
+    embedding = mapped_column(Vector(384), nullable=True)
+    
     document = relationship("Document", back_populates="chunks")
