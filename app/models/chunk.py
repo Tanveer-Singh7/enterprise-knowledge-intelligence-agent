@@ -21,6 +21,9 @@ class Chunk(Base):
         default=dict,
         nullable=False,
     )
-    embedding = mapped_column(Vector(384), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(
+        Vector(384),
+        nullable=True
+    )
     
     document = relationship("Document", back_populates="chunks")

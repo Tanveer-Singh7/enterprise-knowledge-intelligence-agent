@@ -76,7 +76,11 @@ def benchmark(
 
     try:
         for chunk, embedding in zip(chunks, embeddings):
-            chunk.embedding = embedding.tolist()
+            db.execute(
+                Chunk.__table__.update()
+                .where(Chunk.id == chunk.id)
+                .values(embedding = embedding.tolist())
+            )
 
         db.commit()
 
