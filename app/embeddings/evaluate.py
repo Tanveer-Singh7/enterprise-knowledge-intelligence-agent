@@ -9,7 +9,12 @@ from app.models import Chunk, Document
 
 
 MODEL_NAME = "BAAI/bge-small-en-v1.5"
-TOP_K = 10
+
+# Retrieve more chunks than the final document-level K so that
+# duplicate chunks from the same document do not distort evaluation.
+CANDIDATE_K = 100
+
+EVAL_KS = (1, 5, 10)
 
 
 def load_questions() -> list[dict]:
@@ -31,36 +36,75 @@ def load_questions() -> list[dict]:
     return questions
 
 
-def load_embeddings():
+def load_corpus_document_ids() -> set[str]:
     db = SessionLocal()
 
     try:
-        statement = (
-            select(Chunk, Document.external_id)
-            .join(Document, Chunk.document_id == Document.id)
-            .where(Chunk.embedding.is_not(None))
-            .order_by(Chunk.id)
-        )
-
-        return list(db.execute(statement).all())
+        statement = select(Document.external_id)
+        return set(db.scalars(statement).all())
 
     finally:
         db.close()
 
 
-def cosine_search(query_embedding, chunks, top_k: int):
-    scored = []
+def retrieve_documents(
+    query_embedding,
+    candidate_k: int,
+) -> list[tuple[float, str]]:
+    """
+    Retrieve chunks using pgvector, then collapse results to documents.
 
-    for chunk, external_id in chunks:
-        score = float(chunk.embedding @ query_embedding)
-        scored.append((score, external_id))
+    A document receives the score of its highest-scoring chunk.
+    Results are returned as unique documents ranked by that score.
+    """
+    db = SessionLocal()
 
-    scored.sort(reverse=True, key=lambda x: x[0])
+    try:
+        distance = Chunk.embedding.cosine_distance(query_embedding)
 
-    return scored[:top_k]
+        statement = (
+            select(
+                Document.external_id,
+                distance.label("distance"),
+            )
+            .join(Document, Chunk.document_id == Document.id)
+            .where(Chunk.embedding.is_not(None))
+            .order_by(distance)
+            .limit(candidate_k)
+        )
+
+        rows = db.execute(statement).all()
+
+    finally:
+        db.close()
+
+    # Keep the best-scoring chunk for each document.
+    best_document_scores: dict[str, float] = {}
+
+    for external_id, cosine_distance in rows:
+        score = 1.0 - float(cosine_distance)
+
+        current_score = best_document_scores.get(external_id)
+
+        if current_score is None or score > current_score:
+            best_document_scores[external_id] = score
+
+    ranked_documents = sorted(
+        (
+            (score, external_id)
+            for external_id, score in best_document_scores.items()
+        ),
+        reverse=True,
+        key=lambda item: item[0],
+    )
+
+    return ranked_documents
 
 
-def reciprocal_rank(retrieved_ids: list[str], expected_ids: set[str]) -> float:
+def reciprocal_rank(
+    retrieved_ids: list[str],
+    expected_ids: set[str],
+) -> float:
     for rank, doc_id in enumerate(retrieved_ids, start=1):
         if doc_id in expected_ids:
             return 1.0 / rank
@@ -74,23 +118,35 @@ def main():
 
     print(f"Confluence questions: {len(questions)}")
 
-    print("Loading stored embeddings...")
-    chunks = load_embeddings()
+    print("Loading corpus document IDs...")
+    corpus_document_ids = load_corpus_document_ids()
 
-    print(f"Chunks with embeddings: {len(chunks)}")
+    # Only evaluate questions whose expected documents are actually
+    # represented in the current retrieval corpus.
+    evaluable_questions = [
+        row
+        for row in questions
+        if set(row["expected_doc_ids"]) & corpus_document_ids
+    ]
+
+    excluded_questions = len(questions) - len(evaluable_questions)
+
+    print(f"Corpus documents: {len(corpus_document_ids)}")
+    print(f"Evaluable questions: {len(evaluable_questions)}")
+    print(f"Excluded questions: {excluded_questions}")
 
     print("Loading embedding model...")
     model = SentenceTransformer(MODEL_NAME, device="cpu")
 
-    recall_1 = 0
-    recall_5 = 0
-    recall_10 = 0
+    recall_counts = {k: 0 for k in EVAL_KS}
     mrr = 0.0
 
-    start = time.perf_counter()
+    retrieval_start = time.perf_counter()
 
-    for row in questions:
-        expected_ids = set(row["expected_doc_ids"])
+    for row in evaluable_questions:
+        expected_ids = (
+            set(row["expected_doc_ids"]) & corpus_document_ids
+        )
 
         query_embedding = model.encode(
             row["question"],
@@ -98,42 +154,43 @@ def main():
             convert_to_numpy=True,
         )
 
-        results = cosine_search(
+        results = retrieve_documents(
             query_embedding,
-            chunks,
-            TOP_K,
+            CANDIDATE_K,
         )
 
-        retrieved_ids = [external_id for _, external_id in results]
+        retrieved_ids = [
+            external_id
+            for _, external_id in results
+        ]
 
-        if any(doc_id in expected_ids for doc_id in retrieved_ids[:1]):
-            recall_1 += 1
-
-        if any(doc_id in expected_ids for doc_id in retrieved_ids[:5]):
-            recall_5 += 1
-
-        if any(doc_id in expected_ids for doc_id in retrieved_ids[:10]):
-            recall_10 += 1
+        for k in EVAL_KS:
+            if any(
+                doc_id in expected_ids
+                for doc_id in retrieved_ids[:k]
+            ):
+                recall_counts[k] += 1
 
         mrr += reciprocal_rank(
             retrieved_ids,
             expected_ids,
         )
 
-    elapsed = time.perf_counter() - start
-    total = len(questions)
+    elapsed = time.perf_counter() - retrieval_start
+    total = len(evaluable_questions)
 
     print()
-    print("Retrieval baseline")
-    print("------------------")
-    print(f"Model:       {MODEL_NAME}")
-    print(f"Questions:   {total}")
-    print(f"Chunks:      {len(chunks)}")
-    print(f"Recall@1:    {recall_1 / total:.4f}")
-    print(f"Recall@5:    {recall_5 / total:.4f}")
-    print(f"Recall@10:   {recall_10 / total:.4f}")
-    print(f"MRR:         {mrr / total:.4f}")
-    print(f"Eval time:   {elapsed:.2f}s")
+    print("Retrieval baseline — corrected evaluation")
+    print("------------------------------------------")
+    print(f"Model:             {MODEL_NAME}")
+    print(f"Questions:         {total}")
+    print(f"Excluded:          {excluded_questions}")
+    print(f"Candidate chunks:  {CANDIDATE_K}")
+    print(f"Recall@1:          {recall_counts[1] / total:.4f}")
+    print(f"Recall@5:          {recall_counts[5] / total:.4f}")
+    print(f"Recall@10:         {recall_counts[10] / total:.4f}")
+    print(f"MRR:               {mrr / total:.4f}")
+    print(f"Eval time:         {elapsed:.2f}s")
 
 
 if __name__ == "__main__":

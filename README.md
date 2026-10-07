@@ -1,4 +1,3 @@
-```md
 # Enterprise Knowledge Intelligence & Support Agent
 
 A production-oriented enterprise knowledge and support agent focused on reliable knowledge ingestion, retrieval engineering, grounded generation, evaluation, and controlled tool calling.
