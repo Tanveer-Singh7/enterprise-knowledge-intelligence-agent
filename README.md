@@ -136,42 +136,90 @@ Current database state:
 - Chunks: 5,006
 - Chunks with persisted embeddings: 5,006
 
-### Retrieval Evaluation
+## Retrieval & Evaluation
 
-The retrieval baseline uses questions from the `questions` configuration of EnterpriseRAG-Bench.
+The retrieval pipeline uses PostgreSQL + pgvector for dense vector search, followed by optional reranking.
 
-The test split contains:
+### Retrieval Baseline
 
-- 114 Confluence questions
-- 113 questions whose expected document IDs are present in the current benchmark corpus
-- 99.1% benchmark-document coverage
+The initial baseline uses `BAAI/bge-small-en-v1.5` embeddings with 384 dimensions.
 
-An initial dense retrieval evaluation produced:
+Evaluation was performed on 114 Confluence questions from EnterpriseRAG-Bench, of which 113 were evaluable against the available corpus.
 
-| Metric | Result |
+| Metric | Dense Retrieval |
 |---|---:|
-| Recall@1 | 45.61% |
-| Recall@5 | 67.54% |
-| Recall@10 | 72.81% |
-| MRR | 0.5408 |
+| Recall@1 | 46.02% |
+| Recall@5 | 68.14% |
+| Recall@10 | 73.45% |
+| MRR | 0.5498 |
+| Evaluation time | 12.55s |
 
-These results establish the initial retrieval baseline. Retrieval evaluation and methodology will be refined before comparing subsequent retrieval improvements.
+### Retrieval Failure Analysis
 
-The project follows a:
+The baseline produced 30 Recall@10 failures.
+
+- 14 failures had the expected document within the top 100 candidates but ranked below the top 10.
+- 16 failures did not retrieve the expected document within the top 100 candidates.
+
+This indicated both ranking and candidate-generation limitations.
+
+### Reranking
+
+A standard Sentence Transformers Cross-Encoder was evaluated on the dense retrieval candidates.
+
+Model:
+
+`cross-encoder/ms-marco-MiniLM-L6-v2`
+
+| Metric | Dense | Dense + Reranking |
+|---|---:|---:|
+| Recall@1 | 46.02% | 58.41% |
+| Recall@5 | 68.14% | 72.57% |
+| Recall@10 | 73.45% | 76.99% |
+| MRR | 0.5498 | 0.6450 |
+
+Reranking improved Recall@1 by 12.39 percentage points and MRR by 0.0952.
+
+However, local CPU inference required approximately 47 minutes for the 113-question evaluation. The experiment therefore validated reranking as a useful retrieval technique, but local model inference was not selected as the preferred production approach.
+
+### Hybrid Retrieval
+
+PostgreSQL full-text search combined with dense retrieval using Reciprocal Rank Fusion was also investigated.
+
+The experiment produced a small ranking improvement but no Recall@10 improvement:
+
+| Metric | Dense | Dense + FTS + RRF |
+|---|---:|---:|
+| Recall@1 | 46.02% | 48.67% |
+| Recall@5 | 68.14% | 69.03% |
+| Recall@10 | 73.45% | 73.45% |
+| MRR | 0.5498 | 0.5718 |
+
+The approach was deferred from the MVP because the measured improvement did not justify adding another retrieval path at this stage.
+
+### Current Direction
+
+The production retrieval architecture will use established embedding and reranking APIs where practical:
 
 ```text
-Baseline
-   ↓
-Measure
-   ↓
-Identify Weakness
-   ↓
-Improve
-   ↓
-Measure Again
+User Query
+    ↓
+Embedding API
+    ↓
+PostgreSQL + pgvector
+    ↓
+Candidate Retrieval
+    ↓
+Reranking API
+    ↓
+Evidence Selection
+    ↓
+Grounded LLM
+    ↓
+Answer + Sources
 ```
 
-workflow.
+The project prioritizes retrieval quality, latency, cost, and maintainability rather than implementing custom retrieval algorithms.
 
 ## Project Structure
 
